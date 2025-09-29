@@ -1,0 +1,137 @@
+import sys
+import re
+import os
+
+
+def parse_vitals_log(input_filename, output_dir):
+    """
+    Parses a vitals log file to extract data for each subject/trial and
+    creates a separate output file for each one in the specified directory.
+
+    Args:
+        input_filename (str): The path to the input log file.
+        output_dir (str): The path to the directory where output files will be saved.
+    """
+    try:
+        with open(input_filename, "r") as f:
+            lines = f.readlines()
+    except FileNotFoundError:
+        print(f"Error: The file '{input_filename}' was not found.")
+        return
+
+    header = ""
+    # Use a dictionary to store data for multiple subjects/trials
+    subjects_data = {}
+
+    # Find the header and data for each subject/trial
+    for line in lines:
+        if line.strip().startswith("Number"):
+            header = line
+        else:
+            # Check if the line starts with a number (the trial ID)
+            match = re.match(r"^\s*(\d+)\s+", line)
+            if match:
+                subject_id = match.group(1)
+                # Initialize a list for the subject if it's the first time seeing it
+                # This will check for trials for subjects that are not possible
+                if int(subject_id) > 10:
+                    continue
+
+                if subject_id not in subjects_data:
+                    subjects_data[subject_id] = []
+                subjects_data[subject_id].append(line)
+
+    if not header:
+        print(f"Error: Could not find the header line in '{input_filename}'.")
+        return
+
+    if not subjects_data:
+        print(f"No subject data found in '{input_filename}'.")
+        return
+
+    # Get the base name of the input file, without its extension.
+    # For example, 'subject_01_nibp.txt' becomes 'subject_01_nibp'.
+    base_name = os.path.splitext(os.path.basename(input_filename))[0]
+
+    # Write data for each found subject/trial
+    for subject_id, data in subjects_data.items():
+        # Create a dynamic output filename, e.g., 'subject_01_nibp_1.txt'
+        output_filename = f"{base_name}_{subject_id}.txt"
+        # Create the full path for the output file in the specified output directory
+        output_path = os.path.join(output_dir, output_filename)
+        with open(output_path, "w") as f:
+            f.write(header)
+            f.writelines(data)
+        print(f"Successfully created '{output_path}' with data for trial {subject_id}.")
+
+
+def process_directory(input_directory_path, output_directory_path):
+    """
+    Finds and processes all subject NIBP files in a given directory.
+    """
+    if not os.path.isdir(input_directory_path):
+        print(f"Error: '{input_directory_path}' is not a valid directory.")
+        return
+
+    # Find all files matching the 'subject_..._nibp.txt' pattern
+    files_to_process = [
+        f
+        for f in os.listdir(input_directory_path)
+        if re.match(r"subject_\d+_nibp\.txt", f)
+    ]
+
+    if not files_to_process:
+        print(
+            f"No files matching 'subject_..._nibp.txt' found in '{input_directory_path}'."
+        )
+        return
+
+    print(
+        f"Found {len(files_to_process)} file(s) to process in '{input_directory_path}'."
+    )
+    for filename in files_to_process:
+        full_path = os.path.join(input_directory_path, filename)
+        print(f"\n--- Processing file: '{filename}' ---")
+        parse_vitals_log(full_path, output_directory_path)
+
+
+if __name__ == "__main__":
+    # --- START OF USER CONFIGURATION ---
+    # PLEASE SET YOUR INPUT AND OUTPUT PATHS HERE
+
+    # Set the path to your input file or directory.
+    # Note: Use a raw string (r"...") or double backslashes (\\) for Windows paths.
+    # Example for a single file: r"C:\Users\YourName\Documents\data\subject_001_nibp.txt"
+    # Example for a directory:   r"C:\Users\YourName\Documents\data"
+    INPUT_PATHS = [
+        r"C:\Users\yeonj\Desktop\iPPG_new_project\data\NIBP_data\Subject_01_nibp.txt",
+        r"C:\Users\yeonj\Desktop\iPPG_new_project\data\NIBP_data\Subject_02_nibp.txt",
+        r"C:\Users\yeonj\Desktop\iPPG_new_project\data\NIBP_data\Subject_03_nibp.txt",
+    ]
+
+    # Set the path to the directory where you want to save the output files.
+    # The script will create this directory if it doesn't exist.
+    # A dot "." means the script will save the files in its own directory.
+    # Example: r"C:\Users\YourName\Documents\results"
+    OUTPUT_PATH = r"C:\Users\yeonj\Desktop\iPPG_new_project\data\NIBP_data_processed"
+
+    # --- END OF USER CONFIGURATION ---
+
+    # Create the output directory if it doesn't exist
+    if not os.path.exists(OUTPUT_PATH):
+        try:
+            os.makedirs(OUTPUT_PATH)
+            print(f"Created output directory: '{OUTPUT_PATH}'")
+        except OSError as e:
+            print(f"Error creating directory '{OUTPUT_PATH}': {e}")
+            sys.exit(1)
+
+    # Loop through all the provided input paths and process each one
+    for path in INPUT_PATHS:
+        print(f"\n===== Processing Path: {path} =====")
+        if os.path.isdir(path):
+            process_directory(path, OUTPUT_PATH)
+        elif os.path.isfile(path):
+            parse_vitals_log(path, OUTPUT_PATH)
+        else:
+            print(f"Error: The path '{path}' is not a valid file or directory.")
