@@ -21,6 +21,7 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 NUM_FOLDS = 5
 DROPOUT_RATE = 0.5  # Configurable dropout rate
 EARLY_STOPPING_PATIENCE = 10  # Number of epochs to wait for improvement before stopping
+NUM_WORKERS = 8  # Adjust based on your CPU cores (e.g., 4, 8, 16)
 
 # Video processing parameters
 NUM_FRAMES = 90
@@ -290,7 +291,10 @@ def evaluate_per_subject(
             subject_pbar.set_postfix({"Subject": subject_id})
             subject_subset = Subset(full_dataset, indices)
             subject_loader = DataLoader(
-                subject_subset, batch_size=BATCH_SIZE, shuffle=False
+                subject_subset,
+                batch_size=BATCH_SIZE,
+                shuffle=False,
+                num_workers=NUM_WORKERS,
             )
 
             subject_mse, subject_mae = 0.0, 0.0
@@ -308,6 +312,69 @@ def evaluate_per_subject(
             )
 
     return pd.DataFrame(subject_metrics)
+
+
+# --- NEW FUNCTION for detailed prediction and metric breakdown ---
+def evaluate_and_save_predictions(model, test_loader, writer, fold):
+    model.eval()
+    all_preds = []
+    all_labels = []
+
+    with torch.no_grad():
+        for videos, labels in tqdm(
+            test_loader, desc="Generating Final Predictions", leave=False
+        ):
+            videos = videos.to(DEVICE)
+            outputs = model(videos)
+            all_preds.append(outputs.cpu())
+            all_labels.append(labels.cpu())
+
+    all_preds = torch.cat(all_preds, dim=0)
+    all_labels = torch.cat(all_labels, dim=0)
+
+    # Create a DataFrame for predictions
+    preds_df = pd.DataFrame(
+        {
+            "actual_sbp": all_labels[:, 0],
+            "predicted_sbp": all_preds[:, 0],
+            "actual_dbp": all_labels[:, 1],
+            "predicted_dbp": all_preds[:, 1],
+        }
+    )
+    preds_df.to_csv(
+        os.path.join(RESULTS_DIR, f"fold_{fold}_predictions.csv"), index=False
+    )
+    print(f"Saved predictions for fold {fold} to 'fold_{fold}_predictions.csv'")
+
+    # Calculate separate metrics
+    mae_sbp = torch.abs(all_labels[:, 0] - all_preds[:, 0]).mean().item()
+    mae_dbp = torch.abs(all_labels[:, 1] - all_preds[:, 1]).mean().item()
+    mse_sbp = torch.pow(all_labels[:, 0] - all_preds[:, 0], 2).mean().item()
+    mse_dbp = torch.pow(all_labels[:, 1] - all_preds[:, 1], 2).mean().item()
+
+    print(f"\n--- Fold {fold} Detailed Test Metrics ---")
+    print(f"  SBP MAE : {mae_sbp:.4f}")
+    print(f"  DBP MAE : {mae_dbp:.4f}")
+    print(f"  SBP MSE : {mse_sbp:.4f}")
+    print(f"  DBP MSE : {mse_dbp:.4f}")
+
+    # Log separate metrics to TensorBoard
+    writer.add_hparams(
+        {"fold": fold},
+        {
+            "final_mae_sbp": mae_sbp,
+            "final_mae_dbp": mae_dbp,
+            "final_mse_sbp": mse_sbp,
+            "final_mse_dbp": mse_dbp,
+        },
+    )
+
+    return {
+        "mae_sbp": mae_sbp,
+        "mae_dbp": mae_dbp,
+        "mse_sbp": mse_sbp,
+        "mse_dbp": mse_dbp,
+    }
 
 
 # --- 6. Main Execution with K-Fold Cross-Validation ---
@@ -361,10 +428,10 @@ if __name__ == "__main__":
         print(f"Testing on {len(test_subjects)} subjects ({len(test_subset)} videos).")
 
         train_loader = DataLoader(
-            train_subset, batch_size=BATCH_SIZE, shuffle=True, num_workers=2
+            train_subset, batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS
         )
         test_loader = DataLoader(
-            test_subset, batch_size=BATCH_SIZE, shuffle=False, num_workers=2
+            test_subset, batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS
         )
 
         print("Initializing a new model and TensorBoard writer for this fold...")
@@ -407,6 +474,11 @@ if __name__ == "__main__":
         )
         print(f"Saved epoch history and plot for fold {fold + 1}.")
 
+        print(
+            f"Loading best model from {os.path.basename(fold_best_model_path)} for final evaluation."
+        )
+        model.load_state_dict(torch.load(fold_best_model_path))
+
         subject_metrics_df = evaluate_per_subject(
             model, full_dataset, test_subject_map, mse_criterion, mae_criterion
         )
@@ -421,11 +493,17 @@ if __name__ == "__main__":
         )
         print(f"Saved per-subject metrics and plot for fold {fold + 1}.")
 
+        # --- Run new detailed evaluation and store results ---
+        detailed_metrics = evaluate_and_save_predictions(
+            model, test_loader, writer, fold + 1
+        )
+
         fold_results.append(
             {
                 "fold": fold + 1,
                 "test_loss_mse": history["test_loss"][-1],
                 "test_mae": history["test_mae"][-1],
+                **detailed_metrics,  # Add detailed metrics to the results
             }
         )
 
@@ -434,17 +512,14 @@ if __name__ == "__main__":
     print(f"\n{'=' * 20} CROSS-VALIDATION SUMMARY {'=' * 20}")
     results_df = pd.DataFrame(fold_results)
 
-    avg_mse = results_df["test_loss_mse"].mean()
-    std_mse = results_df["test_loss_mse"].std()
-    avg_mae = results_df["test_mae"].mean()
-    std_mae = results_df["test_mae"].std()
-
-    print(
-        f"Average Test MSE across {NUM_FOLDS} folds: {avg_mse:.4f} (std: {std_mse:.4f})"
-    )
-    print(
-        f"Average Test MAE across {NUM_FOLDS} folds: {avg_mae:.4f} (std: {std_mae:.4f})"
-    )
+    # Calculate and print averages for all metrics
+    for metric in results_df.columns:
+        if metric != "fold":
+            avg = results_df[metric].mean()
+            std = results_df[metric].std()
+            print(
+                f"Average Test {metric.upper()} across {NUM_FOLDS} folds: {avg:.4f} (std: {std:.4f})"
+            )
 
     print("\nIndividual fold results:")
     print(results_df.to_string(index=False))
