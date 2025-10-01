@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 # --- 1. Configuration ---
 MANIFEST_FILE = r"C:\Users\yeonj\Desktop\iPPG_new_project\data\manifest copy.csv"  # IMPORTANT: Update this path
-RESULTS_DIR = r"C:\Users\yeonj\Desktop\iPPG_new_project\data\results_model_1"  # Directory to save architecture, plots, and history
+RESULTS_DIR = r"C:\Users\yeonj\Desktop\iPPG_new_project\data\results_model_2"  # Directory to save architecture, plots, and history
 NUM_EPOCHS = 200
 BATCH_SIZE = 16
 LEARNING_RATE = 1e-4
@@ -23,10 +23,10 @@ DROPOUT_RATE = 0.5  # Configurable dropout rate
 EARLY_STOPPING_PATIENCE = 10  # Number of epochs to wait for improvement before stopping
 
 # Video processing parameters
-NUM_FRAMES = 150
-NUM_CLIPS = 5
+NUM_FRAMES = 90
+NUM_CLIPS = 3
 CLIP_LEN = NUM_FRAMES // NUM_CLIPS
-RESIZE_DIM = (225, 225)
+RESIZE_DIM = (128, 128)
 
 # Create results directory if it doesn't exist
 os.makedirs(RESULTS_DIR, exist_ok=True)
@@ -88,7 +88,7 @@ class VideoBPDataset(Dataset):
         return video_tensor, labels
 
 
-# --- 3. Model Architecture ---
+# --- 3. Model Architecture (LSTM Removed) ---
 class VideoBPNet(nn.Module):
     def __init__(self, num_clips, clip_len, dropout_rate):
         super(VideoBPNet, self).__init__()
@@ -108,19 +108,9 @@ class VideoBPNet(nn.Module):
             nn.AdaptiveAvgPool3d((1, 1, 1)),
         )
 
-        self.lstm = nn.LSTM(
-            input_size=64,
-            hidden_size=128,
-            num_layers=2,
-            batch_first=True,
-            bidirectional=True,
-        )
-
+        # The fully connected layer now takes the 64 features from the CNN
         self.fc = nn.Sequential(
-            nn.Linear(128 * 2, 64),
-            nn.ReLU(),
-            nn.Dropout(dropout_rate),
-            nn.Linear(64, 2),
+            nn.Linear(64, 64), nn.ReLU(), nn.Dropout(dropout_rate), nn.Linear(64, 2)
         )
 
     def forward(self, x):
@@ -130,10 +120,10 @@ class VideoBPNet(nn.Module):
         features = self.cnn(x)
         features = features.view(batch_size, self.num_clips, -1)
 
-        lstm_out, _ = self.lstm(features)
-        last_step_out = lstm_out[:, -1, :]
+        # Aggregate features from all clips by taking the mean
+        aggregated_features = torch.mean(features, dim=1)
 
-        out = self.fc(last_step_out)
+        out = self.fc(aggregated_features)
         return out
 
 
